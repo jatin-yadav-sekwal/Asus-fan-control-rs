@@ -1,0 +1,20 @@
+[package]
+name = "asus-fan-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+asus-driver = { path = "../asus-driver" }
+fan-engine = { path = "../fan-engine" }
+win-os = { path = "../win-os" }
+parking_lot = { workspace = true }
+gpui = "0.2.2"
+tokio = { version = "1.38", features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "asus-fan-app"
+path = "src/main.rs"

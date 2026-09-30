@@ -1,0 +1,22 @@
+# Cargo build output (the configured target dir also lives outside the repo)
+target/
+
+# Installed binaries rebuilt by build.bat
+/bin/
+
+# Runtime logs
+*.log
+panic.log
+
+# Generated diagnostics
+wmi_probe_results.txt
+ghelper_tree.json
+
+# The legacy C# application has its own repository (see README.md).
+# Keep only the Rust rewrite tracked here.
+AsusFanControl/
+/run.bat
+/*.cs
+/*.sln
+/*.exe
+/*.dll

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/asus-driver",
+    "crates/fan-engine",
+    "crates/win-os",
+    "crates/asus-fan-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AsusFanControl Contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+libloading = "0.8"
+thiserror = "2.0"
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

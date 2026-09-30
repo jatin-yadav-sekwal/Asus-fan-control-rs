@@ -1,0 +1,27 @@
+[package]
+name = "asus-driver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+libloading = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.4"
+
+[[bin]]
+name = "asus-driver-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "hardware-probe"
+path = "src/bin/hardware_probe.rs"
+
+[lib]
+name = "asus_driver"
+path = "src/lib.rs"

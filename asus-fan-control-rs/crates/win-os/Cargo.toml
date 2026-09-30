@@ -1,0 +1,14 @@
+[package]
+name = "win-os"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lib]
+name = "win_os"
+path = "src/lib.rs"
