@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>asus-fan-control-rs — Logo System Preview</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #f97316;
+      --accent-hover: #ea580c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      padding: 40px 24px;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 36px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 24px;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      background: rgba(249, 115, 22, 0.15);
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    p.lead {
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      margin-bottom: 36px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #fff;
+    }
+    .card-desc {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    .preview-box {
+      background: #030712;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      padding: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 220px;
+      flex: 1;
+    }
+    .preview-box.light {
+      background: #f8fafc;
+      border-color: #e2e8f0;
+    }
+    .preview-box img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+    }
+    .scale-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .scale-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .scale-item span {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: monospace;
+    }
+    .file-tag {
+      font-size: 12px;
+      font-family: monospace;
+      color: var(--accent);
+      background: rgba(249, 115, 22, 0.08);
+      padding: 4px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">ASUS-FAN-CONTROL-RS IDENTITY</div>
+      <h1>Flat Vector Logo Showcase</h1>
+      <p class="lead">Pure minimalist vector geometry — no gradients, no 3D effects. High-contrast Rust orange on slate.</p>
+    </header>
+
+    <div class="grid">
+      <!-- Card 1: App Tile -->
+      <div class="card">
+        <div class="card-title">1. App Squircle Tile</div>
+        <div class="card-desc">For desktop shortcuts, Windows Taskbar, installer assets, and window icon.</div>
+        <div class="preview-box">
+          <img src="logo-app-tile.svg" alt="App Tile" style="width: 160px; height: 160px;">
+        </div>
+        <span class="file-tag">assets/logo-app-tile.svg</span>
+      </div>
+
+      <!-- Card 2: Primary Mark -->
+      <div class="card">
+        <div class="card-title">2. Primary Vector Mark (Light Background)</div>
+        <div class="card-desc">Clean 2-tone vector mark showing the aerodynamic tri-blade & outer sensor arcs.</div>
+        <div class="preview-box light">
+          <img src="logo-icon.svg" alt="Primary Icon" style="width: 160px; height: 160px;">
+        </div>
+        <span class="file-tag">assets/logo-icon.svg</span>
+      </div>
+
+      <!-- Card 3: Alternative Quad-Blade Concept -->
+      <div class="card">
+        <div class="card-title">3. Alternative: Quad-Blade Turbine</div>
+        <div class="card-desc">Clean 4-blade symmetrical high-flow design with cardinal calibration marks.</div>
+        <div class="preview-box">
+          <img src="logo-concept2-apex.svg" alt="Quad-Blade Turbine" style="width: 160px; height: 160px;">
+        </div>
+        <span class="file-tag">assets/logo-concept2-apex.svg</span>
+      </div>
+    </div>
+
+    <!-- Horizontal Lockup -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-title">3. Horizontal Brand Lockup</div>
+      <div class="card-desc">For README.md banners, application header bar, or documentation navigation.</div>
+      <div class="preview-box light" style="min-height: 140px; padding: 20px;">
+        <img src="logo-horizontal.svg" alt="Horizontal Lockup" style="max-width: 580px; width: 100%;">
+      </div>
+      <span class="file-tag">assets/logo-horizontal.svg</span>
+    </div>
+
+    <!-- Scalability & Favicon Test -->
+    <div class="card">
+      <div class="card-title">4. Responsive Scalability Verification</div>
+      <div class="card-desc">Tested at standard operating system and browser scales (128px, 64px, 48px, 32px, 16px).</div>
+      <div class="preview-box" style="padding: 24px;">
+        <div class="scale-row">
+          <div class="scale-item">
+            <img src="logo-app-tile.svg" style="width: 128px; height: 128px;" alt="128px">
+            <span>128px</span>
+          </div>
+          <div class="scale-item">
+            <img src="logo-app-tile.svg" style="width: 64px; height: 64px;" alt="64px">
+            <span>64px</span>
+          </div>
+          <div class="scale-item">
+            <img src="logo-app-tile.svg" style="width: 48px; height: 48px;" alt="48px">
+            <span>48px</span>
+          </div>
+          <div class="scale-item">
+            <img src="logo-app-tile.svg" style="width: 32px; height: 32px;" alt="32px">
+            <span>32px</span>
+          </div>
+          <div class="scale-item">
+            <img src="logo-app-tile.svg" style="width: 16px; height: 16px;" alt="16px">
+            <span>16px</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -5,11 +5,15 @@ use tracing::{debug, info, warn};
 use crate::acpi::AcpiDevice;
 use crate::error::DriverError;
 use crate::ffi::RawAsusWinIO;
+use crate::ipc::PipeClient;
 use crate::types::{FanId, FanPwm, FanTelemetry, SystemTelemetry};
 
 pub enum DriverBackend {
     Acpi(AcpiDevice),
     WinIO(RawAsusWinIO),
+    /// Forwards every call over the control pipe to the SYSTEM helper. Used by
+    /// the GUI, which cannot open `\\.\AsusSAIO` itself.
+    Remote(PipeClient),
 }
 
 pub struct AsusDriver {
@@ -156,6 +160,29 @@ impl AsusDriver {
         self.fan_count
     }
 
+    /// Attaches to the SYSTEM helper instead of loading the driver locally.
+    ///
+    /// This is the only constructor the GUI may use: an elevated administrator
+    /// is not enough, `\\.\AsusSAIO` answers to `NT AUTHORITY\SYSTEM` alone.
+    pub fn connect(pipe_name: &str) -> Result<Self, DriverError> {
+        let client = PipeClient::connect(pipe_name)?;
+        let (fan_count, initial_temp) = client.hello()?;
+        info!(
+            "Driver attached over {}: fan_count={}, cpu={}°C",
+            pipe_name, fan_count, initial_temp
+        );
+        Ok(Self {
+            backend: DriverBackend::Remote(client),
+            fan_count,
+            thermal_reader: None,
+            last_known_temp: if (15..=115).contains(&initial_temp) {
+                initial_temp
+            } else {
+                55
+            },
+        })
+    }
+
     pub fn get_fan_rpm(&self, fan_idx: u8) -> Result<u32, DriverError> {
         self.validate_fan_index(fan_idx)?;
         match &self.backend {
@@ -163,6 +190,7 @@ impl AsusDriver {
                 let rpm = acpi.get_fan_rpm(fan_idx)?.unwrap_or(0);
                 Ok(rpm)
             }
+            DriverBackend::Remote(client) => client.get_rpm(fan_idx),
             DriverBackend::WinIO(raw) => unsafe {
                 (raw.healthy_table_set_fan_index)(fan_idx);
                 // The EC needs a beat to latch the new fan index before the tach
@@ -182,6 +210,10 @@ impl AsusDriver {
     }
 
     pub fn get_all_fan_rpms(&self) -> Result<Vec<u32>, DriverError> {
+        // One round trip instead of N when talking to the helper.
+        if let DriverBackend::Remote(client) = &self.backend {
+            return client.get_rpms();
+        }
         let mut rpms = Vec::with_capacity(self.fan_count as usize);
         for i in 0..self.fan_count {
             rpms.push(self.get_fan_rpm(i)?);
@@ -195,6 +227,14 @@ impl AsusDriver {
                 if let Ok(Some(temp)) = acpi.get_cpu_temperature() {
                     self.last_known_temp = temp;
                     return Ok(temp);
+                }
+            }
+            DriverBackend::Remote(client) => {
+                if let Ok(temp) = client.get_temp() {
+                    if (15..=115).contains(&temp) {
+                        self.last_known_temp = temp;
+                        return Ok(temp);
+                    }
                 }
             }
             DriverBackend::WinIO(raw) => {
@@ -257,6 +297,11 @@ impl AsusDriver {
                 }
                 Ok(())
             }
+            DriverBackend::Remote(client) => {
+                client.set_duty(fan_idx, percent)?;
+                debug!("Fan #{} set to {}% over IPC", fan_idx, percent);
+                Ok(())
+            }
             DriverBackend::WinIO(raw) => {
                 let pwm = FanPwm::from_percent(percent);
                 unsafe {
@@ -292,6 +337,7 @@ impl AsusDriver {
                 }
                 Ok(())
             }
+            DriverBackend::Remote(client) => client.set_all(percent),
             DriverBackend::WinIO(_) => {
                 let pwm = FanPwm::from_percent(percent);
                 for i in 0..self.fan_count {
@@ -309,6 +355,9 @@ impl AsusDriver {
             DriverBackend::Acpi(acpi) => {
                 acpi.reset_to_bios()?;
             }
+            DriverBackend::Remote(client) => {
+                client.reset_one(fan_idx)?;
+            }
             DriverBackend::WinIO(raw) => unsafe {
                 (raw.healthy_table_set_fan_index)(fan_idx);
                 (raw.healthy_table_set_fan_test_mode)(0x00u16);
@@ -323,6 +372,9 @@ impl AsusDriver {
         match &self.backend {
             DriverBackend::Acpi(acpi) => {
                 acpi.reset_to_bios()?;
+            }
+            DriverBackend::Remote(client) => {
+                client.reset_all()?;
             }
             DriverBackend::WinIO(_) => {
                 for i in 0..self.fan_count {
@@ -354,6 +406,11 @@ impl Drop for AsusDriver {
             DriverBackend::Acpi(acpi) => {
                 let _ = acpi.reset_to_bios();
             }
+            DriverBackend::Remote(_) => {
+                // Nothing to release locally. Dropping the pipe is the signal:
+                // the helper detects the disconnect and returns the fans to
+                // BIOS control itself.
+            }
             DriverBackend::WinIO(raw) => {
                 for i in 0..self.fan_count {
                     unsafe {
@@ -380,6 +437,14 @@ pub struct SafeAsusDriver {
 impl SafeAsusDriver {
     pub fn new() -> Result<Self, DriverError> {
         let driver = AsusDriver::new()?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(driver)),
+        })
+    }
+
+    /// Attaches to the SYSTEM helper running alongside this process.
+    pub fn connect(pipe_name: &str) -> Result<Self, DriverError> {
+        let driver = AsusDriver::connect(pipe_name)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(driver)),
         })

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- ASUS Fan Control RS - Minimal Monochrome Silhouette -->
+  <defs>
+    <path id="mono-blade" d="
+      M 256 218
+      C 246 178, 214 122, 172 86
+      C 186 74, 214 68, 252 74
+      C 294 82, 316 120, 298 206
+      C 288 222, 270 224, 256 218 Z
+    " fill="currentColor"/>
+  </defs>
+
+  <!-- Outer Gauge Ring -->
+  <g stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none">
+    <path d="M 256 32 A 224 224 0 0 1 450 144" />
+    <path d="M 450 368 A 224 224 0 0 1 256 480" />
+    <path d="M 62 368 A 224 224 0 0 1 62 144" />
+  </g>
+
+  <!-- Pips -->
+  <g fill="currentColor">
+    <circle cx="256" cy="32" r="7" />
+    <circle cx="450" cy="144" r="7" />
+    <circle cx="450" cy="368" r="7" />
+    <circle cx="256" cy="480" r="7" />
+    <circle cx="62" cy="368" r="7" />
+    <circle cx="62" cy="144" r="7" />
+  </g>
+
+  <!-- Blades -->
+  <use href="#mono-blade" />
+  <use href="#mono-blade" transform="rotate(120 256 256)" />
+  <use href="#mono-blade" transform="rotate(240 256 256)" />
+
+  <!-- Center Hub -->
+  <circle cx="256" cy="256" r="44" fill="currentColor" />
+  <!-- Center Negative-Space Cutout -->
+  <circle cx="256" cy="256" r="24" fill="#FFFFFF" />
+  <circle cx="256" cy="256" r="10" fill="currentColor" />
+</svg>

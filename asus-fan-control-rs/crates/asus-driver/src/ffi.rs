@@ -141,25 +141,12 @@ impl RawAsusWinIO {
             paths.push(cwd.join("AsusFanControl").join("AsusWinIO64.dll"));
         }
 
-        // 4. Cloned project directory fallback
-        paths.push(PathBuf::from(r"c:\Users\Asus\Downloads\AsusFanControl\bin\AsusWinIO64.dll"));
-        paths.push(PathBuf::from(r"c:\Users\Asus\Downloads\AsusFanControl\AsusWinIO64.dll"));
-        paths.push(PathBuf::from(r"c:\Users\Asus\Downloads\AsusFanControl\AsusFanControl\AsusFanControl\AsusWinIO64.dll"));
-
-        // 5. ASUS DriverStore repository
-        let driver_store = PathBuf::from(r"C:\Windows\System32\DriverStore\FileRepository");
-        if driver_store.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&driver_store) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.starts_with("asussci2.inf_amd64_") {
-                        let candidate = entry.path().join("ASUSSystemAnalysis").join("AsusWinIO64.dll");
-                        paths.push(candidate);
-                    }
-                }
-            }
-        }
+        // 4. Explicit ASUS_WINIO_PATH-style override already handled above;
+        //    the DriverStore copy is deliberately *not* used. It ships with the
+        //    ASUS System Control Interface as a newer, incompatible build that
+        //    does not answer this application's HealthyTable_* calls, so
+        //    loading it would silently produce -1 everywhere. The working DLL
+        //    is distributed alongside the application.
 
         paths
     }

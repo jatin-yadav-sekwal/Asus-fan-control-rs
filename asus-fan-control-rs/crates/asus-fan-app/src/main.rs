@@ -5,21 +5,17 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::*;
 
-use asus_driver::{DriverError, SafeAsusDriver};
+use asus_driver::{DriverError, SafeAsusDriver, HELPER_ARG, PIPE_ARG_PREFIX};
 use fan_engine::{EngineTelemetrySnapshot, FanProfile, ThermalEngine};
 use win_os::StartupManager;
 
-/// Marker passed to the relaunched SYSTEM instance so it never relaunches
-/// again (no UAC/PsExec loop).
-const SYSTEM_CHILD_ARG: &str = "--as-system-child";
-
-/// Processes that also open `\\.\AsusSAIO`. Only one of them can own the
-/// device — a second one silently reads `-1` from every HealthyTable export.
-const COMPETING_PROCESSES: [&str; 3] = [
-    "AsusFanControlGUI.exe",
-    "AsusFanControl.exe",
-    "asus-fan-app.exe",
-];
+/// Processes other than this application that also open `\\.\AsusSAIO`. Only
+/// one of them can own the device — a second one silently reads `-1` from
+/// every HealthyTable export.
+///
+/// Our own helper is deliberately absent: it *is* `asus-fan-app.exe`, and a
+/// second GUI instance is ruled out by the single-instance mutex instead.
+const COMPETING_PROCESSES: [&str; 2] = ["AsusFanControlGUI.exe", "AsusFanControl.exe"];
 
 // White / orange palette.
 const C_PAGE: u32 = 0xff_ff_ff;
@@ -291,10 +287,12 @@ impl Render for FanControlApp {
                         div()
                             .text_xs()
                             .text_color(rgb(C_MUTED))
-                            .child(if asus_driver::is_local_system() {
-                                "SYSTEM session".to_string()
+                            // The window itself is a normal elevated process; only
+                            // the helper it talks to over the pipe is SYSTEM.
+                            .child(if self.engine.is_some() {
+                                "SYSTEM helper attached".to_string()
                             } else {
-                                format!("token {}", asus_driver::token_sid_string())
+                                "no SYSTEM helper".to_string()
                             }),
                     ),
             )
@@ -835,9 +833,9 @@ fn init_logging() {
 
 /// Lists other processes that would fight us for `\\.\AsusSAIO`.
 ///
-/// `exclude` must contain our own PID plus the PID of the elevated instance
-/// that relaunched us — that parent is still alive for a moment while we start
-/// up, and reporting it as a conflict produced a bogus banner.
+/// `exclude` is our own PID. This application's own helper is never reported:
+/// it *is* `asus-fan-app.exe`, and a second copy of the GUI is already ruled
+/// out by the single-instance mutex.
 fn competing_processes(exclude: &[u32]) -> Vec<String> {
     let output = match std::process::Command::new("tasklist")
         .args(["/FO", "CSV", "/NH"])
@@ -871,71 +869,74 @@ fn competing_processes(exclude: &[u32]) -> Vec<String> {
         .collect()
 }
 
-/// `--parent-pid=<n>` handed to the relaunched SYSTEM instance.
-fn parent_pid_from_args() -> Option<u32> {
-    std::env::args().find_map(|arg| {
-        arg.strip_prefix("--parent-pid=")
-            .and_then(|value| value.parse::<u32>().ok())
-    })
+/// Extracts `--pipe=<name>` handed to the SYSTEM helper process.
+fn pipe_name_from_args() -> Option<String> {
+    std::env::args()
+        .find_map(|arg| arg.strip_prefix(PIPE_ARG_PREFIX).map(|s| s.to_string()))
 }
 
 fn notice_for_error(err: &DriverError) -> String {
     match err {
         DriverError::ElevationRequired => {
             "Not running as SYSTEM — \\\\.\\AsusSAIO rejects this process, so RPM reads \
-             return -1 and writes do nothing. Restart the application so it can \
-             elevate itself."
+             return -1 and writes do nothing. Restart the application so it can start \
+             its SYSTEM helper."
                 .to_string()
         }
         other => format!("{}", other),
     }
 }
 
-/// Brings the process up to `NT AUTHORITY\SYSTEM`, which is the only account
-/// `\\.\AsusSAIO` answers to. Returns `true` when this process must exit
-/// because a relaunched instance has taken over.
-fn bootstrap_to_system() -> bool {
-    if asus_driver::is_local_system() {
-        return false;
+/// Requests administrator rights (UAC) for the single-instance guard only — the
+/// fan hardware itself is handled by the SYSTEM helper.
+///
+/// Returns `true` when this process should continue. `false` means either an
+/// elevated copy has taken over, or elevation failed (already reported).
+fn ensure_elevated() -> bool {
+    if asus_driver::is_elevated() {
+        return true;
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == SYSTEM_CHILD_ARG) {
-        // PsExec said it ran us as SYSTEM but the token disagrees; keep going
-        // and let the in-app notice explain it instead of looping forever.
-        tracing::warn!("SYSTEM child marker present but token is not SYSTEM");
-        return false;
-    }
-
-    if !asus_driver::is_elevated() {
-        tracing::info!("Not elevated; requesting administrator privileges");
-        match asus_driver::relaunch_elevated() {
-            Ok(()) => return true,
-            Err(e) => {
-                tracing::error!("Elevation failed: {}", e);
-                asus_driver::show_error(
-                    "Asus Fan Control",
-                    &format!(
-                        "Administrator privileges are required to access the ASUS fan \
-                         controller.\n\n{}\n\nThe application will now exit.",
-                        e
-                    ),
-                );
-                return true;
-            }
+    tracing::info!("Not elevated; requesting administrator privileges");
+    // Hand the single-instance lock back first: the elevated copy acquires it
+    // immediately after consent, and must not see it still held by us.
+    asus_driver::release_single_instance();
+    match asus_driver::relaunch_elevated() {
+        Ok(()) => false,
+        Err(e) => {
+            tracing::error!("Elevation failed: {}", e);
+            asus_driver::show_error(
+                "Asus Fan Control",
+                &format!(
+                    "Administrator privileges are required to start the SYSTEM helper.\n\n{}\n\n\
+                     The application will now exit.",
+                    e
+                ),
+            );
+            false
         }
     }
+}
 
-    tracing::info!("Elevated; relaunching as NT AUTHORITY\\SYSTEM");
-    // Tell the child our PID so it does not mistake this still-alive parent
-    // for a second, competing fan-control instance.
-    let parent_arg = format!("--parent-pid={}", std::process::id());
-    match asus_driver::launch_as_system(&[SYSTEM_CHILD_ARG, &parent_arg]) {
-        Ok(()) => true,
+/// Registers and starts the SYSTEM helper task, then attaches to its pipe.
+fn attach_to_helper() -> Result<SafeAsusDriver, DriverError> {
+    let exe = std::env::current_exe()
+        .map_err(|e| DriverError::DriverNotReady {
+            reason: format!("cannot resolve own path: {}", e),
+        })?;
+
+    let pipe = asus_driver::make_pipe_name();
+    tracing::info!("Starting SYSTEM helper on {}", pipe);
+    asus_driver::start_system_task(&exe, &[HELPER_ARG, &format!("{}{}", PIPE_ARG_PREFIX, pipe)])
+        .map_err(|e| DriverError::DriverNotReady {
+            reason: format!("could not start helper: {}", e),
+        })?;
+
+    match SafeAsusDriver::connect(&pipe) {
+        Ok(d) => Ok(d),
         Err(e) => {
-            tracing::error!("SYSTEM relaunch failed: {}", e);
-            asus_driver::show_error("Asus Fan Control", &format!("{}\n\nThe application will now exit.", e));
-            true
+            asus_driver::stop_system_task();
+            Err(e)
         }
     }
 }
@@ -948,19 +949,29 @@ fn main() {
 
     init_logging();
 
-    // Single-exe flow: UAC prompt -> silent PsExec -> SYSTEM GUI. No bat files,
-    // no console windows.
-    if bootstrap_to_system() {
+    // Headless SYSTEM worker: never opens a window, never reaches the GUI path.
+    if let Some(pipe) = pipe_name_from_args() {
+        std::process::exit(asus_driver::helper::run(&pipe));
+    }
+
+    // One GUI per machine. A second copy would delete the running helper's
+    // scheduled task and start a competing helper against the same EC.
+    if !asus_driver::acquire_single_instance() {
+        asus_driver::show_error(
+            "Asus Fan Control",
+            "Asus Fan Control is already running.\n\nSwitch to the existing window instead \
+             of starting a second copy.",
+        );
+        return;
+    }
+
+    if !ensure_elevated() {
+        asus_driver::release_single_instance();
         return;
     }
 
     // Warn before touching hardware if another fan tool already owns the device.
-    // Exclude ourselves and the elevated instance that relaunched us.
-    let mut exclude_pids = vec![std::process::id()];
-    if let Some(parent) = parent_pid_from_args() {
-        exclude_pids.push(parent);
-    }
-    let conflicts = competing_processes(&exclude_pids);
+    let conflicts = competing_processes(&[std::process::id()]);
     let mut notice: Option<String> = if conflicts.is_empty() {
         None
     } else {
@@ -972,7 +983,7 @@ fn main() {
     };
 
     let mut telemetry = EngineTelemetrySnapshot::placeholder();
-    let engine: Option<Arc<ThermalEngine>> = match SafeAsusDriver::new() {
+    let engine: Option<Arc<ThermalEngine>> = match attach_to_helper() {
         Ok(driver) => {
             let init_temp = driver.lock().get_cpu_temperature().unwrap_or(0);
             let init_rpms = driver.lock().get_all_fan_rpms().unwrap_or_default();
@@ -1051,7 +1062,15 @@ fn main() {
     });
 
     tracing::info!("UI exited; shutting down thermal engine.");
-    if let Some(eng) = engine_for_shutdown {
+    if let Some(eng) = &engine_for_shutdown {
         eng.stop();
     }
+    // Dropping the engine closes the control pipe. The helper detects the
+    // disconnect, returns the fans to BIOS control and deletes its own
+    // scheduled task — so a crashed or killed GUI cannot leave a latched duty
+    // or a resident SYSTEM process behind.
+    drop(engine_for_shutdown);
+    std::thread::sleep(Duration::from_millis(500));
+    asus_driver::stop_system_task();
+    asus_driver::release_single_instance();
 }

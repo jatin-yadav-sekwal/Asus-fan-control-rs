@@ -1,8 +1,11 @@
-/// Definitive DLL probe — tests AsusWinIO64.dll from SYSTEM context
+/// Definitive DLL probe — tests AsusWinIO64.dll from a SYSTEM context
 /// to verify the DLL works exactly like the original C# AsusFanControl app.
 ///
-/// The original C# app runs as SYSTEM via `PsExec -i -s -d` and the DLL works.
-/// This probe replicates that exact pattern.
+/// The original application also worked only under SYSTEM, which is why the
+/// production path now goes through the Task Scheduler helper
+/// (`asus_driver::helper`). This probe deliberately bypasses that and loads the
+/// DLL itself, so it needs a SYSTEM shell of its own — it is a development
+/// tool, not part of the shipped workflow.
 
 fn main() {
     println!("=== AsusWinIO64 DLL Definitive Probe ===\n");
@@ -11,11 +14,7 @@ fn main() {
     println!("Process ID: {}", std::process::id());
 
     // Try to load the DLL from multiple locations
-    let dll_paths = [
-        r"AsusWinIO64.dll",
-        r"C:\Users\Asus\Downloads\AsusFanControl\AsusWinIO64.dll",
-        r"C:\Users\Asus\Downloads\AsusFanControl\AsusFanControl\AsusFanControl\AsusWinIO64.dll",
-    ];
+    let dll_paths = [r"AsusWinIO64.dll"];
 
     let mut lib: Option<libloading::Library> = None;
 

@@ -1,6 +1,9 @@
 # Cargo build output (the configured target dir also lives outside the repo)
 target/
 
+# Release staging (package.ps1)
+/dist/
+
 # Installed binaries rebuilt by build.bat
 /bin/
 

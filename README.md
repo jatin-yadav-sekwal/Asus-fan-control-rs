@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="asus-fan-control-rs/assets/logo-horizontal.svg" alt="Asus Fan Control" width="420">
+</p>
+
 # AsusFanControl (Rust)
 
 A standalone Windows fan-control application for ASUS laptops, rewritten from
@@ -10,11 +14,19 @@ automatically (temperature curve) or manually (fixed 0–100 % duty).
 > [**Karmel0x/AsusFanControl**](https://github.com/Karmel0x/AsusFanControl),
 > the original legacy application that discovered this control path.
 > It is MIT licensed, © 2023 **Karmel0x**. Without that work none of this
-> would exist. `AsusWinIO64.dll` is © ASUSTek COMPUTER INC. and is taken from
-> the ASUS System Control Interface driver package; `PsExec.exe` is ©
-> Sysinternals (Microsoft).
+> would exist. `AsusWinIO64.dll` is © ASUSTek COMPUTER INC.; see
+> [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ---
+
+## Download
+
+Grab the latest ZIP from the [Releases](../../releases) page, extract it
+anywhere, and double-click `bin\asus-fan-app.exe`.
+
+The ZIP contains everything needed at runtime — `AsusWinIO64.dll` plus the
+`AsusSAIO.sys` kernel driver it installs on first run. No PsExec, no manual
+setup, no console windows.
 
 ## What it does
 
@@ -28,8 +40,7 @@ automatically (temperature curve) or manually (fixed 0–100 % duty).
   EC actually acknowledged, so a silent write failure is never mistaken for success.
 - **Safety watchdog** — forces 100 % fan if the CPU passes the emergency threshold.
 - **Auto-start** — one click to register the app for logon.
-- **Self-contained** — one EXE. Double-click, accept the UAC prompt, done. No
-  `.bat`, no console windows.
+- **Self-contained** — one folder. Double-click, accept the UAC prompt, done.
 
 ## Why it needs `SYSTEM`
 
@@ -38,20 +49,27 @@ ASUS exposes the fans through the `\\.\AsusSAIO` device (installed by the
 `NT AUTHORITY\SYSTEM`** — a normal user, and even a fully elevated
 administrator, gets `-1` back from every query.
 
-So the app bootstraps itself in two steps:
+So the hardware is owned by a small **SYSTEM helper** that this application
+starts and talks to over a named pipe:
 
-1. If it is not elevated, it re-launches itself with a UAC prompt
-   (`ShellExecuteW` + `runas`).
-2. If it is elevated but not `SYSTEM`, it re-launches itself through
-   `PsExec.exe -w <app dir> -i -s -d`, with `CREATE_NO_WINDOW` so nothing flashes.
+1. The GUI launches elevated (`ShellExecuteW` + `runas`, one UAC prompt).
+2. It registers a one-shot scheduled task (`AsusFanControlSystemHelper`) that
+   runs `asus-fan-app.exe --sys-helper --pipe=...` as `NT AUTHORITY\SYSTEM`.
+3. The helper opens `\\.\AsusSAIO`, waits on a GUID-named pipe whose DACL
+   grants access to SYSTEM and the launching user only, and serves the GUI.
+4. When the GUI closes — or crashes — the pipe breaks, the helper hands the
+   fans back to the BIOS curve and deletes its own task.
 
-The relaunched instance passes `--as-system-child` and `--parent-pid=<n>` back to
-itself so the bootstrap never loops and never mistakes its own parent for a
-second, competing fan-control process.
+Nothing is left latched: the last commanded duty never outlives the GUI, and a
+killed process cannot leave a resident SYSTEM worker behind.
+
+`PsExec.exe` is **not used anywhere** in this project. Sysinternals does not
+grant redistribution rights for PsTools, and the scheduled-task helper removes
+the need for it entirely.
 
 > Run **one** fan-control app at a time. If the legacy C# `AsusFanControlGUI.exe`
-> (or a second copy of this app) is already holding `\\.\AsusSAIO`, this app shows
-> a hardware-access banner instead of silently reading `0 RPM`.
+> is already holding `\\.\AsusSAIO`, this app shows a hardware-access banner
+> instead of silently reading `0 RPM`.
 
 ---
 
@@ -61,7 +79,6 @@ second, competing fan-control process.
 - An ASUS laptop with the [ASUS System Control Interface](https://www.asus.com/support/faq/1047338/)
   installed (the `ASUS System Analysis` service must be running — it comes with
   `MyASUS`)
-- `PsExec.exe` in the same folder as the application (already present in this repo)
 - Rust toolchain, only if you want to build from source
 
 ## How to use it
@@ -72,10 +89,10 @@ second, competing fan-control process.
 bin\asus-fan-app.exe
 ```
 
-Accept the UAC prompt — the window opens as `SYSTEM` and the header shows
-`SYSTEM session`. That's it.
+Accept the UAC prompt. The header reads `SYSTEM helper attached` once the pipe
+is up — that is your confirmation that `\\.\AsusSAIO` answered.
 
-`run-gui.bat` still works if you prefer launching through PsExec directly, and
+`run-gui.bat` is a thin double-click wrapper for the same thing, and
 `run-cli.bat` opens an elevated command-line status check.
 
 ### Building from source
@@ -90,8 +107,8 @@ app first — Windows will refuse to replace a running EXE.
 
 ### Command line
 
-`bin\asus-driver-cli.exe` is a hardware test harness (run it as `SYSTEM`,
-e.g. via `run-cli.bat`):
+`bin\asus-driver-cli.exe` is a hardware test harness. It elevates itself, starts
+the same SYSTEM helper, runs the command, and tears everything down:
 
 ```
 asus-driver-cli status            # temperature + fan RPM
@@ -102,29 +119,34 @@ asus-driver-cli monitor -i 1000   # 1 Hz telemetry loop
 ```
 
 `bin\hardware-probe.exe` exercises the DLL directly, including a 100 % duty
-write test, and is useful for confirming the driver is reachable.
+write test. It bypasses the helper and therefore needs a SYSTEM shell of its
+own — for day-to-day checks use `asus-driver-cli` instead.
 
 ## Repository layout
 
 ```
 asus-fan-control-rs/
 ├── crates/
-│   ├── asus-driver/     # WinIO/ACPI FFI, driver lifecycle, SYSTEM bootstrap
-│   │   └── src/bin/     #   asus-driver-cli, hardware-probe
+│   ├── asus-driver/     # WinIO/ACPI FFI, driver lifecycle, pipe IPC,
+│   │   └── src/bin/     #   scheduled-task bootstrap, asus-driver-cli, hardware-probe
 │   ├── fan-engine/      # thermal loop: curves, hysteresis, watchdog, telemetry
 │   ├── win-os/          # autostart / scheduler helpers
 │   └── asus-fan-app/    # gpui desktop UI
+├── assets/              # app icon, logos, bundled AsusWinIO64.dll
 ├── build.bat            # release build + install into bin\
+.github/workflows/       # tagged release builds the ZIP automatically
 bin/                     # built binaries (not tracked)
-run-gui.bat              # PsExec launcher
-run-cli.bat              # CLI status as SYSTEM
+run-gui.bat              # double-click launcher
+run-cli.bat              # CLI status (self-elevates)
 AsusFanControl/          # the original C# app, its own git repository
 ```
 
 ### Logs
 
-`bin\app.log` records every launch (token SID, driver probe, PID) and a
-telemetry line every 5 s. `bin\panic.log` is written if the UI panics.
+`bin\app.log` records every launch (token SID, helper task start, pipe name,
+PID) and a telemetry line every 5 s. The SYSTEM helper appends to the same
+file, so a failed handshake is visible without hunting through
+`systemprofile\AppData`. `bin\panic.log` is written if the UI panics.
 
 ---
 
@@ -135,7 +157,6 @@ telemetry line every 5 s. `bin\panic.log` is written if the UI panics.
   Everything here is a derivative of that work.
 - **ASUSTek COMPUTER INC.** — `AsusWinIO64.dll` and the ASUS System Control
   Interface driver package.
-- **Sysinternals / Microsoft** — `PsExec.exe`, used to reach `NT AUTHORITY\SYSTEM`.
 - The **gpui** project for the UI toolkit.
 
 ## License

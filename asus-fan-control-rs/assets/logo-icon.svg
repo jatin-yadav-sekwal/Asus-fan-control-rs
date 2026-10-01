@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- ASUS Fan Control RS - Clean Flat Vector Logo -->
+  <defs>
+    <!-- Single Aerodynamic Fan Blade Definition -->
+    <path id="fan-blade" d="
+      M 256 218
+      C 246 178, 214 122, 172 86
+      C 186 74, 214 68, 252 74
+      C 294 82, 316 120, 298 206
+      C 288 222, 270 224, 256 218 Z
+    " fill="#F97316"/>
+  </defs>
+
+  <!-- Precision Control Outer Gauge Segments (Flat Minimalist Hardware Calibration Arc) -->
+  <g stroke="#0F172A" stroke-width="12" stroke-linecap="round" fill="none">
+    <!-- 3 Segmented Control Arcs indicating fan speed curve tuning -->
+    <path d="M 256 32 A 224 224 0 0 1 450 144" />
+    <path d="M 450 368 A 224 224 0 0 1 256 480" />
+    <path d="M 62 368 A 224 224 0 0 1 62 144" />
+  </g>
+
+  <!-- Hardware Calibration Accent Pips -->
+  <g fill="#F97316">
+    <circle cx="256" cy="32" r="7" />
+    <circle cx="450" cy="144" r="7" />
+    <circle cx="450" cy="368" r="7" />
+    <circle cx="256" cy="480" r="7" />
+    <circle cx="62" cy="368" r="7" />
+    <circle cx="62" cy="144" r="7" />
+  </g>
+
+  <!-- 3 Aerodynamic Blades with 120-degree Rotational Symmetry -->
+  <use href="#fan-blade" />
+  <use href="#fan-blade" transform="rotate(120 256 256)" />
+  <use href="#fan-blade" transform="rotate(240 256 256)" />
+
+  <!-- Center Motor Hub / Spindle (Solid Flat Layering) -->
+  <circle cx="256" cy="256" r="44" fill="#0F172A" />
+  <circle cx="256" cy="256" r="28" fill="#F97316" />
+  <circle cx="256" cy="256" r="12" fill="#FFFFFF" />
+</svg>

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use asus_driver::{AsusDriver, DriverError};
+use asus_driver::{DriverError, SafeAsusDriver, HELPER_ARG, PIPE_ARG_PREFIX};
 
 #[derive(Parser)]
 #[command(name = "asus-driver-cli")]
@@ -45,6 +45,13 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Headless SYSTEM worker: started by our own scheduled task, never prints.
+    if let Some(pipe) = std::env::args()
+        .find_map(|arg| arg.strip_prefix(PIPE_ARG_PREFIX).map(|s| s.to_string()))
+    {
+        std::process::exit(asus_driver::helper::run(&pipe));
+    }
+
     let cli = Cli::parse();
 
     let filter = if cli.verbose {
@@ -62,89 +69,132 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Asus Fan Control - Rust Hardware HAL Test (ACPI/WinIO) ");
     println!("=====================================================\n");
 
-    let mut driver = match AsusDriver::new() {
-        Ok(d) => d,
-        Err(DriverError::ElevationRequired) => {
-            eprintln!("[-] Error: Access Denied.");
-            eprintln!("    Communicating with the ASUS kernel driver (\\.\\AsusWinIO) requires Administrator privileges.");
-            eprintln!("\n[>] Please right-click run-cli.bat and choose 'Run as administrator'");
-            eprintln!("    or run from an elevated command prompt.\n");
-            eprintln!("Press Enter to exit...");
-            let _ = std::io::stdin().read_line(&mut String::new());
-            std::process::exit(1);
-        }
-        Err(DriverError::DllNotFound(paths)) => {
-            eprintln!("[-] Error: AsusWinIO64.dll was not found.");
-            eprintln!("    Searched locations:");
-            for p in paths {
-                eprintln!("      - {:?}", p);
+    // Exactly one session per machine: a second one would delete the running
+    // helper's scheduled task and start a competitor against the same EC.
+    if !asus_driver::acquire_single_instance() {
+        eprintln!("[-] Asus Fan Control is already running (GUI or another CLI).");
+        eprintln!("    Close it first — only one client can own \\\\.\\AsusSAIO at a time.");
+        std::process::exit(1);
+    }
+
+    // The scheduled task is created under SYSTEM, which needs admin rights.
+    if !asus_driver::is_elevated() {
+        eprintln!("[*] Administrator privileges are required to start the SYSTEM helper.");
+        eprintln!("[*] Relaunching elevated...\n");
+        asus_driver::release_single_instance();
+        let args = requote_args();
+        match asus_driver::relaunch_elevated_with_args(&args) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("[-] UAC elevation failed: {}", e);
+                std::process::exit(1);
             }
-            eprintln!("\nPlease copy AsusWinIO64.dll to the current directory or install MyASUS.");
-            eprintln!("\nPress Enter to exit...");
-            let _ = std::io::stdin().read_line(&mut String::new());
-            std::process::exit(1);
         }
+    }
+
+    let driver = match attach_to_helper() {
+        Ok(d) => d,
         Err(e) => {
-            eprintln!("[-] Failed to initialize driver: {}", e);
-            eprintln!("\nPress Enter to exit...");
-            let _ = std::io::stdin().read_line(&mut String::new());
+            eprintln!("[-] Could not reach the SYSTEM helper: {}", notice(&e));
+            asus_driver::stop_system_task();
+            asus_driver::release_single_instance();
             std::process::exit(1);
         }
     };
 
-    let command = cli.command.unwrap_or(Commands::Status);
+    let result = run_command(&driver, cli.command.unwrap_or(Commands::Status));
 
+    // Dropping the driver closes the pipe; the helper then restores BIOS
+    // control and removes its own task. This is the orderly path.
+    drop(driver);
+    std::thread::sleep(Duration::from_millis(400));
+    asus_driver::stop_system_task();
+    asus_driver::release_single_instance();
+
+    result
+}
+
+/// Starts the SYSTEM helper (the shared `--sys-helper` implementation) and
+/// attaches to it over the control pipe.
+fn attach_to_helper() -> Result<SafeAsusDriver, DriverError> {
+    let exe = std::env::current_exe().map_err(|e| DriverError::DriverNotReady {
+        reason: format!("cannot resolve own path: {}", e),
+    })?;
+
+    let pipe = asus_driver::make_pipe_name();
+    asus_driver::start_system_task(&exe, &[HELPER_ARG, &format!("{}{}", PIPE_ARG_PREFIX, pipe)])
+        .map_err(|e| DriverError::DriverNotReady {
+            reason: format!("could not start helper: {}", e),
+        })?;
+
+    match SafeAsusDriver::connect(&pipe) {
+        Ok(d) => Ok(d),
+        Err(e) => {
+            asus_driver::stop_system_task();
+            Err(e)
+        }
+    }
+}
+
+fn run_command(
+    driver: &SafeAsusDriver,
+    command: Commands,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Commands::Status => {
-            print_status(&mut driver)?;
+            print_status(driver)?;
         }
         Commands::SetAll { percent } => {
             if percent == 0 {
                 println!("[*] Resetting all fans to BIOS automatic control...");
-                driver.reset_all_to_bios()?;
+                driver.lock().reset_all_to_bios()?;
                 println!("[+] Successfully restored BIOS curve.");
             } else {
                 println!("[*] Setting all fans to {}%...", percent);
-                driver.set_all_fans_percent(percent)?;
+                driver.lock().set_all_fans_percent(percent)?;
                 println!("[+] Successfully updated all fans to {}%.", percent);
             }
             std::thread::sleep(Duration::from_millis(500));
-            print_status(&mut driver)?;
+            print_status(driver)?;
         }
         Commands::Set { fan_id, percent } => {
             if percent == 0 {
                 println!("[*] Resetting Fan #{} to BIOS control...", fan_id);
-                driver.reset_fan_to_bios(fan_id)?;
+                driver.lock().reset_fan_to_bios(fan_id)?;
             } else {
                 println!("[*] Setting Fan #{} to {}%...", fan_id, percent);
-                driver.set_fan_percent(fan_id, percent)?;
+                driver.lock().set_fan_percent(fan_id, percent)?;
             }
             std::thread::sleep(Duration::from_millis(500));
-            print_status(&mut driver)?;
+            print_status(driver)?;
         }
         Commands::Reset => {
             println!("[*] Restoring all fans to factory BIOS control...");
-            driver.reset_all_to_bios()?;
+            driver.lock().reset_all_to_bios()?;
             println!("[+] Reset complete.");
-            print_status(&mut driver)?;
+            print_status(driver)?;
         }
         Commands::Monitor { interval_ms } => {
-            println!("[*] Starting live monitor (Interval: {}ms). Press Ctrl+C to exit...", interval_ms);
+            println!(
+                "[*] Starting live monitor (Interval: {}ms). Press Ctrl+C to exit...",
+                interval_ms
+            );
             let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
             let r = running.clone();
 
             ctrlc::set_handler(move || {
                 r.store(false, std::sync::atomic::Ordering::SeqCst);
                 println!("\n[*] Stopping monitor and safely restoring BIOS control...");
-            }).ok();
+            })
+            .ok();
 
             while running.load(std::sync::atomic::Ordering::SeqCst) {
-                let temp = driver.get_cpu_temperature().unwrap_or(0);
-                let fan_count = driver.fan_count();
+                let temp = driver.lock().get_cpu_temperature().unwrap_or(0);
+                let fan_count = driver.lock().fan_count();
                 let mut fan_str = String::new();
 
                 for i in 0..fan_count {
-                    let rpm = driver.get_fan_rpm(i).unwrap_or(0);
+                    let rpm = driver.lock().get_fan_rpm(i).unwrap_or(0);
                     fan_str.push_str(&format!("Fan #{}: {:4} RPM   ", i, rpm));
                 }
 
@@ -159,8 +209,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn print_status(driver: &mut AsusDriver) -> Result<(), Box<dyn std::error::Error>> {
-    let telemetry = driver.get_system_telemetry()?;
+fn print_status(driver: &SafeAsusDriver) -> Result<(), Box<dyn std::error::Error>> {
+    let telemetry = driver.lock().get_system_telemetry()?;
 
     println!("[+] Hardware Status:");
     println!("    CPU Temperature : {}°C", telemetry.cpu_temp_c);
@@ -171,4 +221,30 @@ fn print_status(driver: &mut AsusDriver) -> Result<(), Box<dyn std::error::Error
     }
     println!();
     Ok(())
+}
+
+fn notice(err: &DriverError) -> String {
+    match err {
+        DriverError::ElevationRequired | DriverError::HealthyTableUnresponsive { .. } => {
+            "\\\\.\\AsusSAIO answered with -1, which means the helper is not running as \
+             NT AUTHORITY\\SYSTEM. Check the helper log under %LOCALAPPDATA%\\AsusFanControl."
+                .to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Rebuilds a command line for the elevated copy of ourselves.
+fn requote_args() -> String {
+    std::env::args()
+        .skip(1)
+        .map(|arg| {
+            if arg.contains(' ') || arg.contains('"') {
+                format!("\"{}\"", arg.replace('"', "\\\""))
+            } else {
+                arg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

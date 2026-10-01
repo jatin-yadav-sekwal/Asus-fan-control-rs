@@ -167,7 +167,7 @@ pub fn token_sid_string() -> String {
 }
 
 /// Returns the raw bytes of the current process token's user SID.
-fn token_user_sid_bytes() -> Option<Vec<u8>> {
+pub(crate) fn token_user_sid_bytes() -> Option<Vec<u8>> {
     unsafe {
         let mut token: *mut c_void = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -268,7 +268,8 @@ pub fn preflight_repair() {
     if !is_local_system() {
         warn!(
             "Not running as NT AUTHORITY\\SYSTEM (token SID: {}). \\\\.\\{} usually rejects \
-             non-SYSTEM callers, so HealthyTable_* will return -1. Launch via run-gui.bat.",
+             non-SYSTEM callers, so HealthyTable_* will return -1. Start the SYSTEM helper \
+             instead of opening the driver directly.",
             sid,
             DRIVER_SERVICE
         );
@@ -379,9 +380,6 @@ const SW_SHOWNORMAL: i32 = 1;
 const MB_OK: u32 = 0;
 const MB_ICONERROR: u32 = 0x0000_0010;
 
-/// Hides the console window of child console processes (PsExec).
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 #[repr(C)]
 struct TokenElevation {
     token_is_elevated: u32,
@@ -410,7 +408,9 @@ extern "system" {
 }
 
 /// `true` when the process token carries an elevated (administrator) UAC
-/// elevation type. Needed because PsExec cannot install PSEXESVC otherwise.
+/// elevation type. Creating a scheduled task that runs as `NT AUTHORITY\SYSTEM`
+/// is an administrator-only operation, so the GUI needs this before it can
+/// start the SYSTEM helper.
 pub fn is_elevated() -> bool {
     unsafe {
         let mut token: *mut c_void = std::ptr::null_mut();
@@ -450,6 +450,12 @@ pub fn show_error(title: &str, text: &str) {
 
 /// Relaunches the current executable elevated (triggers the UAC prompt).
 pub fn relaunch_elevated() -> Result<(), String> {
+    relaunch_elevated_with_args("")
+}
+
+/// Same as [`relaunch_elevated`], but passes a raw command line to the
+/// elevated copy. Arguments are re-quoted by the caller.
+pub fn relaunch_elevated_with_args(args: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot resolve own path: {}", e))?;
     let dir = exe
         .parent()
@@ -467,13 +473,23 @@ pub fn relaunch_elevated() -> Result<(), String> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+    let params: Vec<u16> = if args.is_empty() {
+        Vec::new()
+    } else {
+        wide(args)
+    };
+    let params_ptr = if params.is_empty() {
+        std::ptr::null()
+    } else {
+        params.as_ptr()
+    };
 
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             operation.as_ptr(),
             file.as_ptr(),
-            std::ptr::null(),
+            params_ptr,
             directory.as_ptr(),
             SW_SHOWNORMAL,
         )
@@ -488,135 +504,4 @@ pub fn relaunch_elevated() -> Result<(), String> {
             result as isize
         ))
     }
-}
-
-/// Restarts the current executable under `NT AUTHORITY\SYSTEM` via PsExec,
-/// with no visible console windows.
-///
-/// `\\.\AsusSAIO` rejects every other account, so this is the only way a
-/// double-clicked EXE can reach the driver.
-pub fn launch_as_system(extra_args: &[&str]) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot resolve own path: {}", e))?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| "cannot resolve own directory".to_string())?
-        .to_path_buf();
-
-    let psexec = find_psexec(&exe).ok_or_else(|| {
-        format!(
-            "PsExec.exe was not found next to {} or on PATH.\n\n\
-             It is required to run this app as NT AUTHORITY\\SYSTEM, which is the \
-             only account the ASUS driver accepts. Copy PsExec.exe into the same \
-             folder as the application.",
-            exe.display()
-        )
-    })?;
-
-    info!(
-        "Relaunching as SYSTEM: {:?} -w {:?} -i -s -d {:?} {:?}",
-        psexec, dir, exe, extra_args
-    );
-
-    let own_pid = std::process::id();
-    let exe_name = exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("asus-fan-app.exe")
-        .to_string();
-    let before = process_ids_named(&exe_name);
-
-    use std::os::windows::process::CommandExt;
-    let mut command = std::process::Command::new(&psexec);
-    command
-        .arg("-accepteula")
-        .arg("-w")
-        .arg(&dir)
-        .arg("-i")
-        .arg("-s")
-        .arg("-d")
-        .arg(&exe)
-        .args(extra_args)
-        .creation_flags(CREATE_NO_WINDOW);
-
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("failed to start PsExec: {}", e))?;
-
-    // PsExec -d reports a misleading exit code (it returned the child PID on
-    // this machine), so success is determined by observing the relaunched
-    // process rather than trusting the status alone.
-    let status = child
-        .wait()
-        .map_err(|e| format!("failed waiting for PsExec: {}", e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(6);
-    loop {
-        let now = process_ids_named(&exe_name);
-        if now.iter().any(|pid| *pid != own_pid && !before.contains(pid)) {
-            info!(
-                "SYSTEM instance started (PsExec exit code {:?})",
-                status.code()
-            );
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-
-    Err(format!(
-        "PsExec could not start the application as SYSTEM (PsExec exit code {}). \
-         Make sure PsExec.exe is not blocked by antivirus and that you \
-         accepted the UAC prompt.",
-        status.code().unwrap_or(-1)
-    ))
-}
-
-/// PIDs of running processes with the given image name.
-fn process_ids_named(name: &str) -> Vec<u32> {
-    let output = match std::process::Command::new("tasklist")
-        .args(["/FO", "CSV", "/NH"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let cols: Vec<&str> = line.split("\",\"").collect();
-            if cols.len() < 2 {
-                return None;
-            }
-            if !name.eq_ignore_ascii_case(cols[0].trim_matches('"')) {
-                return None;
-            }
-            cols[1].trim_matches('"').parse::<u32>().ok()
-        })
-        .collect()
-}
-
-fn find_psexec(exe: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dir = exe.parent()?;
-    let candidates: [Option<std::path::PathBuf>; 2] = [
-        Some(dir.join("PsExec.exe")),
-        dir.parent().map(|p| p.join("PsExec.exe")),
-    ];
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    if let Some(paths) = std::env::var_os("PATH") {
-        for entry in std::env::split_paths(&paths) {
-            let candidate = entry.join("PsExec.exe");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }

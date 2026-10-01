@@ -23,8 +23,8 @@ pub enum DriverError {
 
     #[error(
         "Not running as NT AUTHORITY\\SYSTEM: the \\\\.\\AsusSAIO device rejects non-SYSTEM \
-         callers, so every HealthyTable_* call returns -1.\nLaunch the app with run-gui.bat \
-         (PsExec -i -s) instead of starting the .exe directly."
+         callers, so every HealthyTable_* call returns -1.\nThe SYSTEM helper did not start; \
+         check app.log for the Task Scheduler output."
     )]
     ElevationRequired,
 
@@ -34,7 +34,7 @@ pub enum DriverError {
     #[error(
         "AsusWinIO64.dll loaded but the AsusSAIO kernel driver is not responding ({reason}).\n\
          Another fan-control app (AsusFanControlGUI) may be holding \\\\.\\AsusSAIO, or the \
-         driver service is stuck. Close other fan tools and relaunch via run-gui.bat."
+         driver service is stuck. Close other fan tools and relaunch the application."
     )]
     DriverNotReady { reason: String },
 
@@ -49,6 +49,21 @@ pub enum DriverError {
          stopped responding mid-read"
     )]
     FanReadFailed { fan_index: u8, value: i32 },
+
+    #[error("Could not reach the SYSTEM helper on pipe '{pipe}': {source}")]
+    PipeConnectFailed {
+        pipe: String,
+        source: std::io::Error,
+    },
+
+    #[error("Control pipe '{pipe}' failed: {source}")]
+    PipeIo {
+        pipe: String,
+        source: std::io::Error,
+    },
+
+    #[error("Control pipe protocol error: {0}")]
+    PipeProtocol(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

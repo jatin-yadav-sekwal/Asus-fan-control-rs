@@ -1,0 +1,15 @@
+[package]
+name = "svg2ico"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Renders the app logo SVG into a multi-resolution Windows .ico (and, when
+# asked, a PNG for the README). Run it from tools/svg2ico:
+#
+#   cargo run --release -- ../../asus-fan-control-rs/assets/logo-app-tile.svg \
+#                            ../../asus-fan-control-rs/assets/app.ico
+
+[dependencies]
+resvg = "0.45"
+ico = "0.5"

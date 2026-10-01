@@ -6,6 +6,9 @@ members = [
     "crates/win-os",
     "crates/asus-fan-app",
 ]
+# One-off asset generator (SVG -> .ico). Kept out of the workspace so a normal
+# `cargo build` does not pay for resvg.
+exclude = ["tools/svg2ico"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,3 +22,13 @@ thiserror = "2.0"
 parking_lot = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Release binaries shipped on GitHub: full LTO, single codegen unit and
+# stripped symbols keep the EXE small and the 1 Hz control loop cheap.
+# panic stays on unwind so a panicking task cannot abort the whole process.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+debug = false
