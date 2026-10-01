@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use win_os::StartupManager;
 
 use asus_driver::{DriverError, SafeAsusDriver, HELPER_ARG, PIPE_ARG_PREFIX};
 
@@ -42,6 +43,18 @@ enum Commands {
         #[arg(short, long, default_value_t = 1000, help = "Poll interval in milliseconds")]
         interval_ms: u64,
     },
+
+    /// Manage the start-with-Windows scheduled task. Never touches the EC, so
+    /// the installer can call it while nothing else is running.
+    Autostart {
+        /// Remove the task instead of creating it
+        #[arg(long)]
+        disable: bool,
+
+        /// Only report the state: exit 0 when enabled, 1 when not
+        #[arg(long)]
+        status: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,6 +66,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let cli = Cli::parse();
+
+    // Start-with-Windows needs neither the single-instance guard nor the SYSTEM
+    // helper, so handle it before either. It does need to be elevated: Windows
+    // refuses /SC ONLOGON task creation from a filtered token.
+    if let Some(Commands::Autostart { disable, status }) = &cli.command {
+        std::process::exit(autostart(*disable, *status));
+    }
 
     let filter = if cli.verbose {
         "debug,asus_driver=debug"
@@ -141,6 +161,9 @@ fn run_command(
     command: Commands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        // Handled in main() before the helper is ever started - it needs
+        // neither the pipe nor the hardware.
+        Commands::Autostart { .. } => {}
         Commands::Status => {
             print_status(driver)?;
         }
@@ -247,4 +270,64 @@ fn requote_args() -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// `asus-driver-cli autostart`. Exit codes: 0 = enabled (or removed), 1 =
+/// `--status` reporting "disabled", 2 = Windows refused.
+fn autostart(disable: bool, status_only: bool) -> i32 {
+    if status_only {
+        return if StartupManager::is_autostart_enabled() {
+            println!("start-with-Windows: enabled");
+            0
+        } else {
+            println!("start-with-Windows: disabled");
+            1
+        };
+    }
+
+    if !asus_driver::is_elevated() {
+        eprintln!("[-] Administrator privileges are required to change start-with-Windows.");
+        return 2;
+    }
+
+    // The task must launch the GUI, not this CLI; they sit side by side.
+    let gui = match std::env::current_exe() {
+        Ok(exe) => exe.with_file_name("asus-fan-app.exe"),
+        Err(e) => {
+            eprintln!("[-] Cannot resolve own path: {}", e);
+            return 2;
+        }
+    };
+    if !gui.exists() {
+        eprintln!(
+            "[-] GUI not found next to this executable: {}",
+            gui.display()
+        );
+        return 2;
+    }
+
+    let result = if disable {
+        StartupManager::disable_autostart()
+    } else {
+        StartupManager::enable_autostart(&gui, "")
+    };
+
+    // Believe Windows, not the exit code of the schtasks call.
+    let enabled = StartupManager::is_autostart_enabled();
+    println!(
+        "start-with-Windows: {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+
+    match result {
+        Ok(()) if enabled == !disable => 0,
+        Ok(()) => {
+            eprintln!("[-] Task Scheduler accepted the command but the task state did not change.");
+            2
+        }
+        Err(e) => {
+            eprintln!("[-] {}", e);
+            2
+        }
+    }
 }

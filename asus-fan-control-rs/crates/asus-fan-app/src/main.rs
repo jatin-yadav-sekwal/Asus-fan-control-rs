@@ -123,17 +123,36 @@ impl FanControlApp {
     }
 
     fn toggle_autostart(&mut self, cx: &mut Context<Self>) {
-        if let Ok(exe_path) = std::env::current_exe() {
-            if self.is_autostart {
-                let _ = StartupManager::disable_autostart();
-                self.is_autostart = false;
-            } else {
-                // Standalone: the EXE elevates itself, so point at it directly.
-                let _ = StartupManager::enable_autostart(&exe_path, "");
-                self.is_autostart = true;
+        let exe_path = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                self.is_autostart = StartupManager::is_autostart_enabled();
+                asus_driver::show_error(
+                    "Asus Fan Control",
+                    &format!("Cannot resolve the running executable:\n\n{}", e),
+                );
+                cx.notify();
+                return;
             }
-            cx.notify();
+        };
+
+        let result = if self.is_autostart {
+            StartupManager::disable_autostart()
+        } else {
+            StartupManager::enable_autostart(&exe_path, "")
+        };
+
+        // Report what Windows actually stored, not what we meant to store -
+        // the previous version flipped the label unconditionally, so a refused
+        // schtasks call still read "Enabled" until the next launch.
+        self.is_autostart = StartupManager::is_autostart_enabled();
+        if let Err(e) = result {
+            asus_driver::show_error(
+                "Asus Fan Control",
+                &format!("Could not change Auto-Start:\n\n{}", e),
+            );
         }
+        cx.notify();
     }
 
     fn preset_button(&self, pct: u8, cx: &mut Context<Self>) -> impl IntoElement {

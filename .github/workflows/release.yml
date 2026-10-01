@@ -11,6 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Override the target-dir pinned in asus-fan-control-rs/.cargo/config.toml
+      # (a hardcoded local path) so CI builds somewhere it owns, and so
+      # rust-cache actually caches the artifacts it produces.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,21 +33,36 @@ jobs:
         run: cargo build --release --locked
         shell: pwsh
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) {
+            Write-Host "Inno Setup already present: $iscc"
+          } else {
+            choco install innosetup --no-progress -y
+            if (-not (Test-Path $iscc)) { throw "Inno Setup installation failed" }
+          }
+
       - name: Package
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          ./package.ps1 -Version $version
+          ./package.ps1 -Version $version -RequireInstaller
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-zip
-          path: dist/*.zip
+          name: release-binaries
+          path: |
+            dist/*.zip
+            dist/*-Setup.exe
           if-no-files-found: error
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*-Setup.exe
           generate_release_notes: true

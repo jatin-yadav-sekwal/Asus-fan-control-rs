@@ -21,10 +21,13 @@ automatically (temperature curve) or manually (fixed 0–100 % duty).
 
 ## Download
 
-Grab the latest ZIP from the [Releases](../../releases) page, extract it
-anywhere, and double-click `bin\asus-fan-app.exe`.
+Grab the latest release from the [Releases](../../releases) page:
 
-The ZIP contains everything needed at runtime — `AsusWinIO64.dll` plus the
+- **`AsusFanControl-rs-vX.Y.Z-Setup.exe`** — the installer. Recommended.
+- **`AsusFanControl-rs-vX.Y.Z.zip`** — portable. Extract it anywhere and
+  double-click `bin\asus-fan-app.exe`.
+
+Both contain everything needed at runtime — `AsusWinIO64.dll` plus the
 `AsusSAIO.sys` kernel driver it installs on first run. No PsExec, no manual
 setup, no console windows.
 
@@ -83,7 +86,21 @@ the need for it entirely.
 
 ## How to use it
 
-### Running a build
+### Installing
+
+Run `AsusFanControl-rs-vX.Y.Z-Setup.exe`. It puts the app in the Start Menu and
+under *Settings > Apps*, where it has a working uninstaller, and offers two
+optional checkboxes:
+
+- **Start with Windows** — creates `AsusFanControlAutoStart`, an `ONLOGON` task
+  with *Run with highest privileges*, so the app is already elevated at logon
+  and never shows a UAC prompt.
+- **Desktop shortcut** — a normal Start Menu style shortcut.
+
+Uninstalling removes the logon task, the `AsusFanControlSystemHelper` task, and
+any `AsusSAIO` service entry left pointing into the install folder.
+
+### Running a portable build
 
 ```
 bin\asus-fan-app.exe
@@ -116,7 +133,14 @@ asus-driver-cli set-all 60        # all fans to 60% (0 restores BIOS control)
 asus-driver-cli set 0 40          # fan #0 to 40%
 asus-driver-cli reset             # hand control back to the BIOS curve
 asus-driver-cli monitor -i 1000   # 1 Hz telemetry loop
+asus-driver-cli autostart         # create the start-with-Windows task
+asus-driver-cli autostart --disable  # remove it
+asus-driver-cli autostart --status   # exit 0 = enabled, 1 = disabled
 ```
+
+The `autostart` subcommand is what the installer and the GUI's `Auto-Start`
+switch both drive, so the task name, schedule and privilege level only exist in
+one place.
 
 `bin\hardware-probe.exe` exercises the DLL directly, including a 100 % duty
 write test. It bypasses the helper and therefore needs a SYSTEM shell of its
@@ -132,9 +156,11 @@ asus-fan-control-rs/
 │   ├── fan-engine/      # thermal loop: curves, hysteresis, watchdog, telemetry
 │   ├── win-os/          # autostart / scheduler helpers
 │   └── asus-fan-app/    # gpui desktop UI
-├── assets/              # app icon, logos, bundled AsusWinIO64.dll
+├── assets/              # app icon, logos, bundled AsusWinIO64.dll + AsusSAIO.sys
 ├── build.bat            # release build + install into bin\
-.github/workflows/       # tagged release builds the ZIP automatically
+├── packaging/           # Inno Setup script for the release installer
+├── package.ps1          # stages the release folder, ZIP and Setup.exe
+.github/workflows/       # tagged release builds the ZIP + installer automatically
 bin/                     # built binaries (not tracked)
 run-gui.bat              # double-click launcher
 run-cli.bat              # CLI status (self-elevates)

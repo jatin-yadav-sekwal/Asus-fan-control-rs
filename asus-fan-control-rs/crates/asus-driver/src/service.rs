@@ -5,6 +5,11 @@
 //! `Stop Pending`. In that state every `HealthyTable_*` export returns `-1`,
 //! which the old code silently turned into "0 RPM". We normalise the service
 //! before handing over to the DLL.
+//!
+//! The DLL also records an absolute path to `.\AsusSAIO.sys` next to itself, so
+//! removing or relocating the application leaves the service pointing at a file
+//! that no longer exists - and the next run then has no driver to start. The
+//! image path is therefore repaired as part of the same preflight.
 
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -42,6 +47,21 @@ struct ServiceStatus {
     dw_service_specific_exit_code: u32,
     dw_check_point: u32,
     dw_wait_hint: u32,
+}
+
+/// `QUERY_SERVICE_CONFIGW`. The four string members point *into* the buffer the
+/// API filled, so they are only valid while that buffer is alive.
+#[repr(C)]
+struct QueryServiceConfig {
+    dw_service_type: u32,
+    dw_start_type: u32,
+    dw_error_control: u32,
+    lp_binary_path_name: *mut u16,
+    lp_load_order_group: *mut u16,
+    dw_tag_id: u32,
+    lp_dependencies: *mut u16,
+    lp_service_start_name: *mut u16,
+    lp_display_name: *mut u16,
 }
 
 #[repr(C)]
@@ -84,6 +104,12 @@ extern "system" {
     ) -> i32;
 
     fn QueryServiceStatus(h_service: *mut c_void, lp_service_status: *mut ServiceStatus) -> i32;
+    fn QueryServiceConfigW(
+        h_service: *mut c_void,
+        lp_service_config: *mut QueryServiceConfig,
+        cb_buf_size: u32,
+        pcb_bytes_needed: *mut u32,
+    ) -> i32;
     fn ControlService(
         h_service: *mut c_void,
         dw_control: u32,
@@ -115,6 +141,118 @@ extern "system" {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Copies a NUL-terminated UTF-16 string written into our buffer by
+/// `QueryServiceConfigW`. The API guarantees termination; the cap only bounds
+/// the read if a malformed buffer ever comes back.
+unsafe fn wide_string(p: *const u16) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    while len < 4096 && *p.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16(std::slice::from_raw_parts(p, len)).ok()
+}
+
+/// The `BINARY_PATH_NAME` of `AsusSAIO`, or `None` when it cannot be read.
+fn query_image_path(service: *mut c_void) -> Option<String> {
+    let mut needed: u32 = 0;
+    unsafe {
+        QueryServiceConfigW(service, std::ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u8; needed as usize];
+    let ok = unsafe {
+        QueryServiceConfigW(
+            service,
+            buf.as_mut_ptr() as *mut QueryServiceConfig,
+            needed,
+            &mut needed,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+
+    let cfg = unsafe { &*(buf.as_ptr() as *const QueryServiceConfig) };
+    unsafe { wide_string(cfg.lp_binary_path_name) }
+}
+
+/// This install's copy of `AsusSAIO.sys`, the file the DLL opens relative to
+/// itself.
+fn own_driver_copy() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join("AsusSAIO.sys");
+    candidate
+        .exists()
+        .then(|| candidate.to_string_lossy().into_owned())
+}
+
+/// Points `AsusSAIO` back at a driver file that actually exists.
+///
+/// Non-destructive by design: a service whose image path still resolves is left
+/// exactly as it is, and the repoint only happens when our own copy is present.
+fn repair_image_path(service: *mut c_void) {
+    let configured = match query_image_path(service) {
+        Some(raw) => raw.trim().trim_matches('"').to_string(),
+        None => {
+            warn!("AsusSAIO image path unreadable; leaving it untouched");
+            return;
+        }
+    };
+    if configured.is_empty() {
+        return;
+    }
+    if std::path::Path::new(&configured).exists() {
+        info!("AsusSAIO image path still valid: {}", configured);
+        return;
+    }
+
+    let own = match own_driver_copy() {
+        Some(p) => p,
+        None => {
+            warn!(
+                "AsusSAIO image path '{}' is gone and no local AsusSAIO.sys was \
+                 found to repoint at",
+                configured
+            );
+            return;
+        }
+    };
+
+    let wide_own = wide(&own);
+    let changed = unsafe {
+        ChangeServiceConfigW(
+            service,
+            SERVICE_KERNEL_DRIVER,
+            SERVICE_DEMAND_START,
+            1, // ERROR_CONTROL_NORMAL
+            wide_own.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if changed == 0 {
+        warn!(
+            "ChangeServiceConfigW(AsusSAIO, binary path) failed (err {})",
+            unsafe { kernel32_get_last_error() }
+        );
+    } else {
+        info!(
+            "AsusSAIO image path repaired: '{}' -> '{}'",
+            configured, own
+        );
+    }
 }
 
 /// `true` when the current process runs as `NT AUTHORITY\SYSTEM`.
@@ -306,6 +444,10 @@ pub fn preflight_repair() {
         }
     };
     info!("AsusSAIO preflight: state={} win32_exit={}", state_name(state), win32);
+
+    // 0. An image path left behind by an uninstall or a moved install makes
+    //    StartService fail with 2 (file not found) and the DLL never retries.
+    repair_image_path(service);
 
     // 1. A driver wedged in STOP_PENDING (usually because another fan-control
     //    process still holds \\.\AsusSAIO) blocks StartService forever.

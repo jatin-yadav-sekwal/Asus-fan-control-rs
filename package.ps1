@@ -17,18 +17,53 @@
 #>
 
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.0",
+    [switch]$SkipInstaller,
+    [switch]$RequireInstaller
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $crateDir = Join-Path $repoRoot "asus-fan-control-rs"
-$targetDir = "$env:USERPROFILE\.cargo_target\asus_fan_control\release"
 
-# Fallback to standard target dir if custom one doesn't exist
-if (-not (Test-Path (Join-Path $targetDir "asus-fan-app.exe"))) {
-    $targetDir = Join-Path $crateDir "target\release"
+# Locate the release binaries. The crate pins its own target-dir in
+# .cargo/config.toml, and that path is not necessarily under $env:USERPROFILE -
+# on CI it lands elsewhere while cargo still uses it, so ask the config rather
+# than guessing, then fall back to the usual locations.
+function Find-ReleaseDir {
+    $candidates = @()
+
+    # CARGO_TARGET_DIR beats .cargo/config.toml, so it has to be checked first.
+    if ($env:CARGO_TARGET_DIR) {
+        $candidates += Join-Path $env:CARGO_TARGET_DIR "release"
+    }
+
+    $cfg = Join-Path $crateDir ".cargo\config.toml"
+    if (Test-Path $cfg) {
+        $m = Select-String -Path $cfg -Pattern '^\s*target-dir\s*=\s*"(?<p>[^"]+)"' |
+            Select-Object -First 1
+        if ($m) {
+            $td = $m.Matches[0].Groups["p"].Value -replace '/', [IO.Path]::DirectorySeparatorChar
+            if (-not [IO.Path]::IsPathRooted($td)) { $td = Join-Path $crateDir $td }
+            $candidates += Join-Path $td "release"
+        }
+    }
+
+    $candidates += Join-Path $crateDir "target\release"
+    $candidates += Join-Path $env:USERPROFILE ".cargo_target\asus_fan_control\release"
+
+    foreach ($dir in $candidates) {
+        if (Test-Path (Join-Path $dir "asus-fan-app.exe")) { return $dir }
+    }
+    return $null
+}
+
+$targetDir = Find-ReleaseDir
+
+if (-not $targetDir) {
+    Write-Error "Release binaries not found - run 'cargo build --release' in asus-fan-control-rs/ first."
+    exit 1
 }
 
 $stageDir = Join-Path $repoRoot "dist\AsusFanControl-rs-v$Version"
@@ -66,6 +101,14 @@ foreach ($bin in $binaries) {
     } else {
         Write-Warning "  ✗ Missing: $src"
     }
+}
+
+# A package without its binaries is worthless - fail loudly instead of
+# publishing a ZIP that only contains the DLL.
+$missing = @($binaries | Where-Object { -not (Test-Path (Join-Path $binDir $_)) })
+if ($missing.Count -gt 0) {
+    Write-Error "  ✗ Staging incomplete, missing: $($missing -join ', ')"
+    exit 1
 }
 
 # Copy runtime dependencies.
@@ -147,11 +190,59 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
 Compress-Archive -Path $stageDir -DestinationPath $zipPath -CompressionLevel Optimal
 
+# Build the Inno Setup installer. The ZIP is the portable option; the setup
+# EXE is what registers Asus Fan Control in the Start Menu and in
+# Settings > Apps, and it is what creates the optional logon task.
+$setupPath = $null
+if (-not $SkipInstaller) {
+    Write-Host "Building installer..." -ForegroundColor Green
+
+    $iscc = $null
+    $isccCmd = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+    if ($isccCmd) { $iscc = $isccCmd.Source }
+    if (-not $iscc) {
+        $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        )
+        foreach ($c in $candidates) {
+            if ($c -and (Test-Path $c)) { $iscc = $c; break }
+        }
+    }
+
+    if (-not $iscc) {
+        $msg = "ISCC.exe (Inno Setup 6) not found - install with 'winget install JRSoftware.InnoSetup' or 'choco install innosetup'."
+        if ($RequireInstaller) { Write-Error $msg; exit 1 }
+        Write-Warning "  $msg"
+    } else {
+        $setupPath = Join-Path $repoRoot "dist\AsusFanControl-rs-v$Version-Setup.exe"
+        if (Test-Path $setupPath) { Remove-Item $setupPath -Force }
+
+        $iss = Join-Path $repoRoot "packaging\AsusFanControl.iss"
+        # Capture ISCC's output: its diagnostics are the only clue when this
+        # fails on CI, and they must not be swallowed by the pipeline.
+        $issOut = & $iscc "/DAppVersion=$Version" $iss 2>&1
+        $issCode = $LASTEXITCODE
+        foreach ($line in $issOut) { Write-Host "    $line" }
+        if ($issCode -ne 0) {
+            Write-Error "  Installer build failed (ISCC exit $issCode)."
+            exit 1
+        }
+        if (-not (Test-Path $setupPath)) {
+            Write-Error "  ISCC reported success but $setupPath is missing."
+            exit 1
+        }
+        Write-Host "  ✓ $setupPath ($([math]::Round((Get-Item $setupPath).Length / 1MB, 2)) MB)"
+    }
+}
+
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
 Write-Host ""
 Write-Host "=== DONE ===" -ForegroundColor Cyan
 Write-Host "Package: $zipPath"
 Write-Host "Size:    $zipSizeMB MB"
+if ($setupPath) { Write-Host "Setup:   $setupPath" }
 Write-Host ""
 Write-Host "Contents:"
 Get-ChildItem $stageDir -Recurse | ForEach-Object {
